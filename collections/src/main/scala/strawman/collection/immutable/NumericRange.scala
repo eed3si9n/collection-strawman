@@ -3,7 +3,7 @@ package strawman.collection.immutable
 import strawman.collection
 import strawman.collection.{SeqFactory, IterableFactory, IterableOnce, Iterator, StrictOptimizedIterableOps, arrayToArrayOps}
 
-import scala.{Any, Boolean, ClassCastException, IllegalArgumentException, IndexOutOfBoundsException, Int, Integral, NoSuchElementException, Numeric, Ordering, Serializable, SerialVersionUID, StringContext, Unit, `inline`, math, specialized, throws}
+import scala.{Any, BigDecimal, Boolean, ClassCastException, Double, Float, IllegalArgumentException, IndexOutOfBoundsException, Int, Integral, NoSuchElementException, Numeric, Ordering, Serializable, SerialVersionUID, StringContext, Unit, `inline`, math, specialized, throws}
 import scala.Predef.ArrowAssoc
 import java.lang.String
 
@@ -49,16 +49,47 @@ sealed class NumericRange[T](
 
     private var _hasNext = !self.isEmpty
     private var _next: T = start
+    private var _bignext: BigDecimal = BigDecimal(num.toDouble(start))
     private val lastElement: T = if (_hasNext) last else start
-    override def knownSize: Int = if (_hasNext) num.toInt((lastElement - _next) / step) + 1 else 0
+    private lazy val biglast: BigDecimal = BigDecimal(num.toDouble(lastElement))
+    private lazy val epsion: BigDecimal = bigstep * 0.01
+    override def knownSize: scala.Int = if (_hasNext) num.toInt((lastElement - _next) / step) + 1 else 0
     def hasNext: Boolean = _hasNext
     def next(): T = {
       if (!_hasNext) Iterator.empty.next()
-      val value = _next
-      _hasNext = value != lastElement
-      _next = num.plus(value, step)
-      value
+      if (isFloating) {
+        val value = _bignext
+        _hasNext = value < biglast - epsion
+        _bignext = value + bigstep
+        fromBigDecimal(value)
+      } else {
+        val value = _next
+        _hasNext = value != lastElement
+        _next = num.plus(value, step)
+        value
+      }
     }
+  }
+
+  private lazy val isFloat: Boolean = {
+    num.one match {
+      case _: Float => true
+      case _        => false
+    }
+  }
+  private lazy val isDouble: Boolean = {
+    num.one match {
+      case _: Double => true
+      case _         => false
+    }
+  }
+  private lazy val bigzero: BigDecimal = BigDecimal(0.0)
+  private lazy val bigstart: BigDecimal = BigDecimal(num.toDouble(start))
+  private lazy val bigstep: BigDecimal = BigDecimal(num.toDouble(step))
+  private lazy val isFloating = isFloat || isDouble
+  private def fromBigDecimal(b: BigDecimal): T = {
+    if (isFloat) b.toFloat.asInstanceOf[T]
+    else b.toDouble.asInstanceOf[T]
   }
 
   /** Note that NumericRange must be invariant so that constructs
@@ -100,12 +131,16 @@ sealed class NumericRange[T](
   }
 
   override def foreach[@specialized(Unit) U](f: T => U): Unit = {
-    var count = 0
+    var idx = 0
     var current = start
-    while (count < length) {
-      f(current)
-      current += step
-      count += 1
+    while (idx < length) {
+      if (isFloating) {
+        f(locationAfterN(idx))
+      } else {
+        f(current)
+        current += step
+      }
+      idx += 1
     }
   }
 
@@ -121,7 +156,10 @@ sealed class NumericRange[T](
     )
   // Methods like apply throw exceptions on invalid n, but methods like take/drop
   // are forgiving: therefore the checks are with the methods.
-  private def locationAfterN(n: Int): T = start + (step * fromInt(n))
+  private def locationAfterN(n: Int): T = {
+    if (isFloating) fromBigDecimal(bigstart + (bigstep * BigDecimal(n)))
+    else start + (step * fromInt(n))
+  }
 
   // When one drops everything.  Can't ever have unchecked operations
   // like "end + 1" or "end - 1" because ranges involving Int.{ MinValue, MaxValue }
@@ -208,8 +246,13 @@ sealed class NumericRange[T](
   }
 
   // a well-typed contains method.
-  def containsTyped(x: T): Boolean =
-    isWithinBoundaries(x) && (((x - start) % step) == zero)
+  def containsTyped(x: T): Boolean = {
+    if (isFloating) {
+      val bigx = BigDecimal(num.toDouble(x))
+      isWithinBoundaries(x) && (((bigx - bigstart) % bigstep) == bigzero)
+    }
+    else isWithinBoundaries(x) && (((x - start) % step) == zero)
+  }
 
   override def contains[A1 >: T](x: A1): Boolean =
     try containsTyped(x.asInstanceOf[T])
@@ -306,7 +349,6 @@ sealed class NumericRange[T](
   *  @define coll numeric range
   */
 object NumericRange {
-
   /** Calculates the number of elements in a range given start, end, step, and
     *  whether or not it is inclusive.  Throws an exception if step == 0 or
     *  the number of elements exceeds the maximum Int.
@@ -349,50 +391,13 @@ object NumericRange {
         if (num.gt(t, limit)) throw new IllegalArgumentException("More than Int.MaxValue elements.")
         else t
       // If the range crosses zero, it might overflow when subtracted
-      val startside = num.signum(start)
-      val endside = num.signum(end)
-      num.toInt{
-        if (startside*endside >= 0) {
-          // We're sure we can subtract these numbers.
-          // Note that we do not use .rem because of different conventions for Long and BigInt
-          val diff = num.minus(end, start)
-          val quotient = check(num.quot(diff, step))
-          val remainder = num.minus(diff, num.times(quotient, step))
-          if (!isInclusive && zero == remainder) quotient else check(num.plus(quotient, one))
-        }
-        else {
-          // We might not even be able to subtract these numbers.
-          // Jump in three pieces:
-          //   * start to -1 or 1, whichever is closer (waypointA)
-          //   * one step, which will take us at least to 0 (ends at waypointB)
-          //   * there to the end
-          val negone = num.fromInt(-1)
-          val startlim  = if (posStep) negone else one
-          val startdiff = num.minus(startlim, start)
-          val startq    = check(num.quot(startdiff, step))
-          val waypointA = if (startq == zero) start else num.plus(start, num.times(startq, step))
-          val waypointB = num.plus(waypointA, step)
-          check {
-            if (num.lt(waypointB, end) != upward) {
-              // No last piece
-              if (isInclusive && waypointB == end) num.plus(startq, num.fromInt(2))
-              else num.plus(startq, one)
-            }
-            else {
-              // There is a last piece
-              val enddiff = num.minus(end,waypointB)
-              val endq    = check(num.quot(enddiff, step))
-              val last    = if (endq == zero) waypointB else num.plus(waypointB, num.times(endq, step))
-              // Now we have to tally up all the pieces
-              //   1 for the initial value
-              //   startq steps to waypointA
-              //   1 step to waypointB
-              //   endq steps to the end (one less if !isInclusive and last==end)
-              num.plus(startq, num.plus(endq, if (!isInclusive && last==end) one else num.fromInt(2)))
-            }
-          }
-        }
-      }
+      val startbig = BigDecimal(start.toString)
+      val endbig = BigDecimal(end.toString)
+      val stepbig = BigDecimal(step.toString)
+      val lenbig = (endbig - startbig) / stepbig
+      if (isInclusive) lenbig.toInt + 1
+      else if ((startbig + stepbig * lenbig.toInt) < endbig) lenbig.toInt + 1
+      else lenbig.toInt
     }
   }
 
