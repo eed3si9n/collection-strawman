@@ -41,6 +41,7 @@ class NumericRangeTest {
     assertEquals(1.6, l(3), 0.00001)
     assertEquals(1.8, l(4), 0.00001)
     assertEquals(2.0, l(5), 0.00001)
+    // println(l)
 
     assertEquals(r(0), l(0), 0.00001)
     assertEquals(r(1), l(1), 0.00001)
@@ -71,12 +72,16 @@ class NumericRangeTest {
 
   @Test
   def doubleRangeContains(): Unit = {
+    val start = System.currentTimeMillis
     import scala.math.Numeric._
-    val r = NumericRange.inclusive(0.0, 10.0, 0.1)(DoubleAsIfIntegral)
-    for { i <- 0 to 100 } {
+    val r = NumericRange.inclusive(0.0, 1000.0, 0.1)(DoubleAsIfIntegral)
+    // println(r.toList)
+    for { i <- 0 to 10000 } {
       assertEquals(r.indexOf(r(i)), i)
       assertEquals(r.contains(r(i)), true)
     }
+    val estimatedTime = System.currentTimeMillis - start
+    println(estimatedTime + " ms")
   }
 
   @Test

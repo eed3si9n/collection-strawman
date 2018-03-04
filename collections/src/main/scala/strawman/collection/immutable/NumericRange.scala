@@ -49,19 +49,26 @@ sealed class NumericRange[T](
 
     private var _hasNext = !self.isEmpty
     private var _next: T = start
-    private var _bignext: BigDecimal = BigDecimal(num.toDouble(start))
+    private var _compensation: T = num.zero // used for Kahan summation algorithm
     private val lastElement: T = if (_hasNext) last else start
-    private lazy val biglast: BigDecimal = BigDecimal(num.toDouble(lastElement))
-    private lazy val epsion: BigDecimal = bigstep * 0.01
-    override def knownSize: scala.Int = if (_hasNext) num.toInt((lastElement - _next) / step) + 1 else 0
+    private lazy val epsion: Double = num.toDouble(step) * 0.01
+    private lazy val lastMinusE: Double = num.toDouble(lastElement) - epsion
+    override def knownSize: Int = if (_hasNext) num.toInt((lastElement - _next) / step) + 1 else 0
     def hasNext: Boolean = _hasNext
     def next(): T = {
       if (!_hasNext) Iterator.empty.next()
       if (isFloating) {
-        val value = _bignext
-        _hasNext = value < biglast - epsion
-        _bignext = value + bigstep
-        fromBigDecimal(value)
+        // https://en.wikipedia.org/wiki/Kahan_summation_algorithm
+        val value = _next
+        _hasNext = num.toDouble(value) < lastMinusE
+        // This is the compensated step. If _compensation is zero, it's just step.
+        val y = num.minus(step, _compensation)
+        // Low order digits of y are expected to lose here, as value gets larger.
+        val t = roundOff(num.plus(value, y))
+        // this recovers the lower part of y
+        _compensation = num.minus(num.minus(t, _next), y)
+        _next = t
+        value
       } else {
         val value = _next
         _hasNext = value != lastElement
@@ -157,7 +164,7 @@ sealed class NumericRange[T](
   // Methods like apply throw exceptions on invalid n, but methods like take/drop
   // are forgiving: therefore the checks are with the methods.
   private def locationAfterN(n: Int): T = {
-    if (isFloating) fromBigDecimal(bigstart + (bigstep * BigDecimal(n)))
+    if (isFloating) fromBigDecimal(bigRoundOff(bigstart + (bigstep * BigDecimal(n))))
     else start + (step * fromInt(n))
   }
 
@@ -245,11 +252,25 @@ sealed class NumericRange[T](
     }
   }
 
+  private final val doubleScale = 12
+  // Float is included here, but it won't work.
+  private final val floatScale = 5
+  // round off the noisy lower bits after summation
+  // discarded bits are later compensated
+  private def roundOff(value: T): T = {
+    if (isFloat) bigRoundOff(BigDecimal(num.toDouble(value))).toFloat.asInstanceOf[T]
+    else bigRoundOff(BigDecimal(num.toDouble(value))).toDouble.asInstanceOf[T]
+  }
+  private def bigRoundOff(value: BigDecimal): BigDecimal = {
+    if (isFloat) value.setScale(floatScale, BigDecimal.RoundingMode.HALF_EVEN)
+    else value.setScale(doubleScale, BigDecimal.RoundingMode.HALF_EVEN)
+  }
+
   // a well-typed contains method.
   def containsTyped(x: T): Boolean = {
     if (isFloating) {
       val bigx = BigDecimal(num.toDouble(x))
-      isWithinBoundaries(x) && (((bigx - bigstart) % bigstep) == bigzero)
+      isWithinBoundaries(x) && (bigRoundOff((bigx - bigstart) % bigstep) == bigzero)
     }
     else isWithinBoundaries(x) && (((x - start) % step) == zero)
   }
@@ -435,5 +456,4 @@ object NumericRange {
     Numeric.DoubleAsIfIntegral -> Ordering.Double,
     Numeric.BigDecimalAsIfIntegral -> Ordering.BigDecimal
   )
-
 }
